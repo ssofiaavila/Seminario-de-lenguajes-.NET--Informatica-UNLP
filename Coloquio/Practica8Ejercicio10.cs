@@ -1,125 +1,175 @@
-/*10) Codificar la clase Temporizador con un evento Tic que se genera 
-cada cierto intervalo de tiempo medido en milisegundos una vez que el 
-temporizador se haya habilitado. La clase debe contar con
-dos propiedades: Intervalo de tipo int y Habilitado de tipo bool. 
-No se debe permitir establecer la propiedad Habilitado en true si 
-no existe ninguna suscripción al evento Tic!!!. No se debe permitir
-establecer el valor de Intervalo menor a 100. En el lanzamiento del 
-evento, el temporizador debe informar la cantidad de veces que se provocó 
-el evento. Para detener los eventos debe establecerse la propiedad
- Habilitado en false. A modo de ejemplo, el siguiente código debe producir 
- la salida
-indicada.
-SALIDA:
-10:58:43 10:58:45 10:58:47 10:58:49 10:58:51
-10:58:52 10:58:53 10:58:54 10:58:55 10:58:56 */
+import { Operator } from './Operator';
+import { Observable } from './Observable';
+import { Subscriber } from './Subscriber';
+import { Subscription } from './Subscription';
+import { Observer, SubscriptionLike, TeardownLogic } from './types';
+import { ObjectUnsubscribedError } from './util/ObjectUnsubscribedError';
+import { SubjectSubscription } from './SubjectSubscription';
+import { rxSubscriber as rxSubscriberSymbol } from '../internal/symbol/rxSubscriber';
 
-using System;
-using System.Threading;
-
-namespace practica8Ejercicio10
-{
-    class Program
-            {
-                static void Main()
-                {
-                    Temporizador t = new Temporizador(); //intancio un objeto de la clase Temporizador
-                    t.Tic += (sender, e) => /// me suscribo al evento, instanciando el evento y el EventArgs
-                    { //esto es lo que haré una vez ocurrido el evento
-                        Console.Write(DateTime.Now.ToString("HH:mm:ss") + " ");
-                        if (e.Tics == 5) {
-                            t.Habilitado = false;//va a hacer 5 tics y se deshabilitará
-                        }
-                    };
-                    t.Intervalo = 2000; //setteo el intervalo, cada 2 milisegundos
-                    t.Habilitado = true;
-                    Console.WriteLine();
-                    t.Intervalo = 1000; //ahora será cada 1 miliseg
-                    t.Habilitado = true;
-
-                    Console.ReadKey();
-                }
-
-                
-            }
-
-            public class TicEventArgs : EventArgs //clase donde declaro cuáles serán los eventArgs, en este caso la cantidad de tics
-            {
-                    public int Tics { get; set; }
-            }
-
-            delegate void TicEventHandler(object sender, TicEventArgs e); //manejador del evento
-
-            class Temporizador
-            {
-                private TicEventHandler _tic; // es una conversión 
-                public event TicEventHandler Tic // es lo que voy a hacer cada vez que alguien se suscribe al evento
-                {
-                    add
-                    {
-                        _tic+=value;
-                    }
-                    remove
-                    {
-                        _tic-=value;
-                    }
-                }
-                private int _intervalo;
-
-                private bool _habilitado=false; 
-
-            
-                public int Intervalo{
-                    get
-                    {
-                        return this._intervalo;
-                    }
-                    set
-                    { 
-                        if(value>=100) // debido a que solo permite indicar intervalos mayores a 100
-                        {
-                            this._intervalo=value;
-                        }
-                    }
-                }
-               
-                public bool Habilitado 
-                {
-                    get
-                    {
-                        return this._habilitado;
-                    }
-                    set 
-                    {
-                        if(value == false)
-                        {
-                             this._habilitado=value;
-                        }
-                         else
-                        if(this._tic != null) //ademas de settear que está habitado, se disparará el evento porque comienza a funcionar el temporizador 
-                        {
-                            this._habilitado=value;
-                            TicTock();
-                        }
-                    }
-                }
-
-               
-                public void TicTock()
-                {
-                    int tics = 0;
-                    while(_habilitado){
-
-                        Thread.Sleep(_intervalo); //está especificado en milisegundos, por eso el 2000
-
-                        if(_tic!= null)
-                        {
-                            _tic(this,new TicEventArgs(){Tics=tics});
-                        }
-                        tics++;
-                    }
-                   
-
-                }
-            }
+/**
+ * @class SubjectSubscriber<T>
+ */
+export class SubjectSubscriber<T> extends Subscriber<T> {
+  constructor(protected destination: Subject<T>) {
+    super(destination);
+  }
 }
+
+/**
+ * A Subject is a special type of Observable that allows values to be
+ * multicasted to many Observers. Subjects are like EventEmitters.
+ *
+ * Every Subject is an Observable and an Observer. You can subscribe to a
+ * Subject, and you can call next to feed values as well as error and complete.
+ *
+ * @class Subject<T>
+ */
+export class Subject<T> extends Observable<T> implements SubscriptionLike {
+
+  [rxSubscriberSymbol]() {
+    return new SubjectSubscriber(this);
+  }
+
+  observers: Observer<T>[] = [];
+
+  closed = false;
+
+  isStopped = false;
+
+  hasError = false;
+
+  thrownError: any = null;
+
+  constructor() {
+    super();
+  }
+
+  /**@nocollapse
+   * @deprecated use new Subject() instead
+  */
+  static create: Function = <T>(destination: Observer<T>, source: Observable<T>): AnonymousSubject<T> => {
+    return new AnonymousSubject<T>(destination, source);
+  }
+
+  lift<R>(operator: Operator<T, R>): Observable<R> {
+    const subject = new AnonymousSubject(this, this);
+    subject.operator = <any>operator;
+    return <any>subject;
+  }
+
+  next(value?: T) {
+    if (this.closed) {
+      throw new ObjectUnsubscribedError();
+    }
+    if (!this.isStopped) {
+      const { observers } = this;
+      const len = observers.length;
+      const copy = observers.slice();
+      for (let i = 0; i < len; i++) {
+        copy[i].next(value);
+      }
+    }
+  }
+
+  error(err: any) {
+    if (this.closed) {
+      throw new ObjectUnsubscribedError();
+    }
+    this.hasError = true;
+    this.thrownError = err;
+    this.isStopped = true;
+    const { observers } = this;
+    const len = observers.length;
+    const copy = observers.slice();
+    for (let i = 0; i < len; i++) {
+      copy[i].error(err);
+    }
+    this.observers.length = 0;
+  }
+
+  complete() {
+    if (this.closed) {
+      throw new ObjectUnsubscribedError();
+    }
+    this.isStopped = true;
+    const { observers } = this;
+    const len = observers.length;
+    const copy = observers.slice();
+    for (let i = 0; i < len; i++) {
+      copy[i].complete();
+    }
+    this.observers.length = 0;
+  }
+
+  unsubscribe() {
+    this.isStopped = true;
+    this.closed = true;
+    this.observers = null;
+  }
+
+  /** @deprecated This is an internal implementation detail, do not use. */
+  _trySubscribe(subscriber: Subscriber<T>): TeardownLogic {
+    if (this.closed) {
+      throw new ObjectUnsubscribedError();
+    } else {
+      return super._trySubscribe(subscriber);
+    }
+  }
+
+  /** @deprecated This is an internal implementation detail, do not use. */
+  _subscribe(subscriber: Subscriber<T>): Subscription {
+    if (this.closed) {
+      throw new ObjectUnsubscribedError();
+    } else if (this.hasError) {
+      subscriber.error(this.thrownError);
+      return Subscription.EMPTY;
+    } else if (this.isStopped) {
+      subscriber.complete();
+      return Subscription.EMPTY;
+    } else {
+      this.observers.push(subscriber);
+      return new SubjectSubscription(this, subscriber);
+    }
+  }
+
+  /**
+   * Creates a new Observable with this Subject as the source. You can do this
+   * to create customize Observer-side logic of the Subject and conceal it from
+   * code that uses the Observable.
+   * @return {Observable} Observable that the Subject casts to
+   */
+  asObservable(): Observable<T> {
+    const observable = new Observable<T>();
+    (<any>observable).source = this;
+    return observable;
+  }
+}
+
+/**
+ * @class AnonymousSubject<T>
+ */
+export class AnonymousSubject<T> extends Subject<T> {
+  constructor(protected destination?: Observer<T>, source?: Observable<T>) {
+    super();
+    this.source = source;
+  }
+
+  next(value: T) {
+    const { destination } = this;
+    if (destination && destination.next) {
+      destination.next(value);
+    }
+  }
+
+  error(err: any) {
+    const { destination } = this;
+    if (destination && destination.error) {
+      this.destination.error(err);
+    }
+  }
+
+  complete() {
+    const { destination } = this;
+    if (destination && destination.complete) {
+      this.destination.complete
